@@ -1,0 +1,19 @@
+{
+  "name": "Akbarali Umar Til Markazi — Arab tili",
+  "short_name": "AU Arab tili",
+  "description": "N. Ibrohimov, M. Yusupov «Arab tili grammatikasi» darsligi asosida lug'at, flashcard va testlar",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#faf9f6",
+  "theme_color": "#1a2238",
+  "lang": "uz",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,85 @@
+/* Universitet qo'shish va ustozlik so'rovi — brauzerda.
+   Ishlatish: node tools/univ-ui.js [rasmlar-papkasi]                      */
+const path = require('path'), { execSync } = require('child_process');
+const { chromium } = require(path.join(execSync('npm root -g').toString().trim(), 'playwright'));
+const { ishgaTushir, sqliteD1 } = require('./emul.js');
+const OUT = process.argv[2];
+let xato = 0;
+const ok = (n, v) => { if (!v) xato++; console.log((v ? '  ✓ ' : '  ✗ ') + n); };
+const matn = (p, s) => p.textContent(s).catch(() => '');
+const rasm = async (p, n) => { if (OUT) { await p.waitForTimeout(300); await p.screenshot({ path: path.join(OUT, n), fullPage: false }); } };
+(async () => {
+  const BAZA = sqliteD1();
+  const s = await ishgaTushir({ env: { BAZA, KABINET_PAROL: 'Bosh-Parol-2026' } });
+  const U = s.url, db = BAZA._db;
+  await fetch(U + 'api/g/guruhlar');
+  const b = await chromium.launch();
+  const jx = [];
+  const sahifa = async () => { const p = await (await b.newContext({ viewport: { width: 390, height: 844 } })).newPage();
+    p.on('pageerror', e => jx.push(e.message)); p.on('dialog', d => d.accept()); return p; };
+
+  console.log('Talaba: universitet qo‘shish');
+  const T = await sahifa();
+  await T.addInitScript(() => {
+    localStorage.setItem('au_user_v1', JSON.stringify({ ism: 'Sardor', familiya: 'Qodirov', tel: '+998901300001', sana: '2026-09-01' }));
+    localStorage.setItem('au_ruxsat_v1', JSON.stringify({ tel: '+998901300001', ruxsat: true, tur: 'tolov' }));
+    localStorage.setItem('au_yangilik_v1', '9999-99-99');
+  });
+  await T.goto(U + 'index.html'); await T.waitForTimeout(1500);
+  await T.evaluate(() => window.auGuruhOch()); await T.waitForSelector('#grSUniv', { timeout: 5000 });
+  ok('ro‘yxatda «➕ Ro‘yxatda yo‘q — universitet qo‘shish»', await T.$('#grSUniv option[value="__yangi"]') !== null);
+  await T.selectOption('#grSUniv', '__yangi');
+  ok('tanlanganda nom yozish maydoni chiqadi', await T.isVisible('#grSUnivYangi'));
+  await T.fill('#grSUnivYangi', 'Qarshi davlat universiteti');
+  await T.click('#grSKurs button:text-is("2-kurs")'); await T.fill('#grSYoz', '205');
+  ok('natija: «Qarshi davlat universiteti · 2-kurs · 205»', /Qarshi davlat universiteti/.test(await matn(T, '#grSN')) && !(await T.isDisabled('#grYuborBtn')));
+  await rasm(T, 'u1-talaba.png');
+  await T.click('#grYuborBtn'); await T.waitForTimeout(1200);
+  const un = db.prepare('SELECT * FROM universitetlar').get();
+  ok('bazaga «kutilmoqda» bo‘lib qo‘shildi', un && un.holat === 'kutilmoqda' && un.nom === 'Qarshi davlat universiteti');
+  ok('talabaga so‘rov holati ko‘rinadi (universitet nomi bilan)', /Qarshi davlat/.test(await matn(T, '#grIchi')));
+  await rasm(T, 'u2-talaba-yuborildi.png');
+
+  console.log('Noma’lum ustoz: ruxsat so‘rash');
+  const N = await sahifa();
+  await N.goto(U + 'ustoz.html'); await N.waitForTimeout(800);
+  ok('kirish sahifasida «Ustozman, lekin loginim yo‘q»', await N.isVisible('.us-och'));
+  await N.click('.us-och'); await N.waitForSelector('#usIsm');
+  await N.fill('#usIsm', 'Nodira Ergasheva'); await N.fill('#usTel', '+998 93 555 11 22');
+  await N.selectOption('#usUniv', '__yangi'); await N.fill('#usUnivN', 'Termiz davlat universiteti'); await N.fill('#usIzoh', 'Arab tili, 1-kurs');
+  await rasm(N, 'u3-ustoz-sorov.png');
+  await N.click('#usBtn'); await N.waitForTimeout(800);
+  ok('so‘rov yuborildi', /So‘rovingiz yuborildi/.test(await matn(N, '#usSorov')));
+
+  console.log('Admin kabineti');
+  const A = await sahifa();
+  await A.goto(U + 'ustoz.html'); await A.fill('#kLogin', 'admin'); await A.fill('#kParol', 'Bosh-Parol-2026'); await A.click('#kBtn');
+  await A.waitForTimeout(1500);
+  const tablar = await A.$$eval('.tab', x => x.map(t => t.textContent));
+  ok('tablarda kutilayotganlar soni: Ustozlar 1, Guruhlarni boshqarish 1', tablar.some(t => /^Ustozlar1$/.test(t)) && tablar.some(t => /^Guruhlarni boshqarish1$/.test(t)));
+  await A.click('.tab:has-text("Ustozlar")'); await A.waitForSelector('#usSorovlar .us-q', { timeout: 5000 });
+  ok('Ustozlar: so‘rov — ism, telefon, universitet, izoh', /Nodira Ergasheva/.test(await matn(A, '#usSorovlar')) && /Termiz/.test(await matn(A, '#usSorovlar')) && /Arab tili/.test(await matn(A, '#usSorovlar')));
+  await rasm(A, 'u4-admin-sorov.png');
+  await A.click('#usSorovlar button:has-text("Login berish")');
+  ok('«Login berish» — forma ism va login bilan to‘ldi', await A.inputValue('#uNom') === 'Nodira Ergasheva' && await A.inputValue('#uLogin') === 'nodira');
+  await A.fill('#uParol', 'parol-1234'); await A.click('#ustozForma .asosiy-btn'); await A.waitForTimeout(1500);
+  ok('ustoz saqlandi, so‘rov o‘chdi', !!db.prepare("SELECT 1 FROM ustozlar WHERE login = 'nodira'").get() && db.prepare('SELECT COUNT(*) AS n FROM ustoz_sorov').get().n === 0);
+  const K = await (await fetch(U + 'api/g/kirish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ login: 'nodira', parol: 'parol-1234' }) })).json();
+  ok('yangi ustoz shu login-parol bilan kira oladi', K.ok && !!K.token);
+  await A.click('.tab:has-text("Guruhlarni boshqarish")'); await A.waitForSelector('#univTak .un-q', { timeout: 5000 });
+  ok('Guruhlarni boshqarish: universitet taklifi (1 guruh, 1 talaba)', /Qarshi davlat universiteti/.test(await A.inputValue('#univTak .un-nom')) && /1 ta guruh · 1 ta talaba/.test(await matn(A, '#univTak')));
+  await rasm(A, 'u5-admin-univ.png');
+  await A.fill('#univTak .un-nom', 'Qarshi davlat universiteti (QarDU)');
+  await A.click('#univTak button:has-text("Tasdiqlash")'); await A.waitForTimeout(1200);
+  const u2 = db.prepare('SELECT * FROM universitetlar').get();
+  ok('tasdiqlandi — nomini to‘g‘rilab', u2.holat === 'tasdiqlangan' && u2.nom === 'Qarshi davlat universiteti (QarDU)');
+  ok('«Qo‘shilgan universitetlar» ro‘yxatida', /Qo‘shilgan universitetlar \(1\)/.test(await matn(A, '#univTak')));
+  const P = await sahifa(); await P.goto(U + 'index.html'); await P.waitForTimeout(1000);
+  await P.evaluate(() => window.auGuruhOch()).catch(() => {});
+  const g = await (await fetch(U + 'api/g/guruhlar')).json();
+  ok('endi hammaga ro‘yxatda chiqadi', g.universitetlar.some(u => u.nom === 'Qarshi davlat universiteti (QarDU)'));
+  ok('sahifalarda JS xatosi yo‘q', !jx.length || (console.log(jx), false));
+  await b.close(); s.close();
+  console.log(xato ? '\n' + xato + ' ta xato' : '\nhammasi joyida');
+  process.exit(xato ? 1 : 0);
+})().catch(e => { console.error(e); process.exit(1); });
